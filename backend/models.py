@@ -26,7 +26,7 @@ class User(Base):
         nullable=False
     )
 
-    projects = relationship("Project", back_populates="owner")
+    projects = relationship("Project", back_populates="owner", passive_deletes=True)
 
 # ===============Project Model ==============
 
@@ -50,7 +50,7 @@ class Project(Base):
 
     owner = relationship("User", back_populates="projects")
 
-    tasks = relationship("Task", back_populates="project")
+    tasks = relationship("Task", back_populates="project", passive_deletes=True)
 
 # ================Task Model ==============
 
