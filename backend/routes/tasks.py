@@ -1,17 +1,20 @@
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 import models
+from ai_parser import parse_task_description
 from algorithms import binary_search, insertion_sort, linear_search
 from core.deps import get_current_user, get_db
 from core.ownership import get_owned_project_or_404
+from schemas.quick_add import QuickAddRequest
 from schemas.task import TaskCreate, TaskOut, TaskUpdate
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
-PRIORITY_RANK = {"low": 1, "medium": 2, "high": 3}
+PRIORITY_RANK = {"low": 3, "medium": 2, "high": 1}
 
 
 def _get_owned_task_or_404(
@@ -35,6 +38,54 @@ def create_task(
     current_user: models.User = Depends(get_current_user),
 ):
     get_owned_project_or_404(db, task_in.project_id, current_user)
+
+    task = models.Task(**task_in.model_dump())
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+@router.post("/quick-add", response_model=TaskOut, status_code=status.HTTP_201_CREATED)
+def quick_add_task(
+    payload: QuickAddRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    project = (
+        db.query(models.Project)
+        .filter(
+            models.Project.id == payload.project_id,
+            models.Project.owner_id == current_user.id,
+        )
+        .first()
+    )
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=[
+                {
+                    "type": "value_error",
+                    "loc": ["body", "project_id"],
+                    "msg": "project_id does not reference an existing project",
+                    "input": payload.project_id,
+                }
+            ],
+        )
+
+    parsed = parse_task_description(payload.description)
+
+    try:
+        task_in = TaskCreate(
+            title=parsed.title,
+            priority=parsed.priority,
+            due_date=parsed.due_date_hint,
+            project_id=payload.project_id,
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors()
+        )
 
     task = models.Task(**task_in.model_dump())
     db.add(task)

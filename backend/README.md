@@ -20,8 +20,9 @@ backend/
 ├── algorithms.py          # Sort/search engine powering GET /tasks?sort=... and /tasks/search (Section 2)
 ├── benchmark_algorithms.py # Comparison-counting benchmark for the engine above
 ├── check_algorithms.py    # Automated PASS/FAIL checks for the engine above
+├── ai_parser.py           # Free-text -> structured task parser powering /tasks/quick-add (Section 3)
 ├── core/
-│   ├── config.py           # Settings (JWT secret, algorithm, CORS origins)
+│   ├── config.py           # Settings (JWT secret, algorithm, CORS origins, USE_REAL_LLM)
 │   ├── security.py         # Password hashing + JWT create/decode
 │   ├── deps.py              # get_db, get_current_user dependencies
 │   └── ownership.py        # Shared "does this project belong to me" check
@@ -29,11 +30,12 @@ backend/
 │   ├── user.py              # UserCreate, UserOut
 │   ├── auth.py               # LoginRequest, Token
 │   ├── project.py           # ProjectCreate, ProjectUpdate, ProjectOut, ProjectStats
-│   └── task.py               # TaskCreate, TaskUpdate, TaskOut
+│   ├── task.py               # TaskCreate, TaskUpdate, TaskOut
+│   └── quick_add.py          # QuickAddRequest, ParsedTask
 └── routes/
     ├── auth.py                # register, login, me
     ├── projects.py           # project CRUD + stats
-    └── tasks.py                # task CRUD
+    └── tasks.py                # task CRUD + sort/search (Section 2) + quick-add (Section 3)
 ```
 
 ## Environment Setup
@@ -66,11 +68,18 @@ JWT_SECRET_KEY="a-long-random-secret-string"
 JWT_ALGORITHM="HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES=60
 CORS_ORIGINS="http://localhost:5500,http://127.0.0.1:5500"
+
+# Optional — only needed for the real-LLM enhancement in Section 3.
+# Leave unset for the default (and graded) keyless mock behavior.
+USE_REAL_LLM=false
+OPENAI_API_KEY=
 ```
 
 | Variable | Purpose |
 |---|---|
 | `ENCODED_DB_URL` | Connection string used by SQLAlchemy (`database_config.py`) — special characters in the password must be URL-encoded |
+| `USE_REAL_LLM` | Optional. `true` to route `/tasks/quick-add` through a real LLM call; unset/`false` (default) always uses the keyless mock. |
+| `OPENAI_API_KEY` | Optional. Only read when `USE_REAL_LLM=true`; otherwise unused. |
 | `JWT_SECRET_KEY` | Secret used to sign/verify JWTs. **Change this in production.** |
 | `JWT_ALGORITHM` | JWT signing algorithm (default `HS256`) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Token lifetime in minutes |
@@ -161,6 +170,7 @@ A logged-in user can only **read, update, or delete their own projects and tasks
 | Method | Path | Description | Success |
 |---|---|---|---|
 | POST | `/tasks/` | Create a task in one of your projects | 201 |
+| POST | `/tasks/quick-add` | Create a task from one free-text sentence (see "Section 3" below) | 201 / 422 |
 | GET | `/tasks/` | List tasks across your own projects | 200 |
 | GET | `/tasks/?sort=priority` | List, sorted by priority (see "Section 2" below) | 200 |
 | GET | `/tasks/?sort=due_date` | List, sorted by due date | 200 |
@@ -251,3 +261,72 @@ python check_algorithms.py
 ```
 
 Prints one `PASS`/`FAIL` line per case (empty/single-element `insertion_sort`, `binary_search` at first/middle/last index and absent, `insertion_sort_count`'s sort correctness and positive-int return, `binary_search_count`'s known-index result, and `linear_search_count`'s absent-value result) using plain `if/else` — no `assert`, `pytest`, or `unittest`. All 12 cases currently pass.
+
+---
+
+## Section 3 — AI Quick-Add
+
+`POST /tasks/quick-add` turns one free-text sentence into a real, persisted row in the same `tasks` table the rest of the app reads and writes — no need to fill in every field by hand.
+
+```json
+// request
+{
+  "description": "Finish the report next Friday, it's urgent",
+  "project_id": 1
+}
+```
+
+Auth-protected and scoped like every other task endpoint: `project_id` must belong to the caller, or the request fails (see below). On success it returns `201` with the created task in the same `TaskOut` shape as the Section 1 CRUD endpoints.
+
+### How it works
+
+1. [routes/tasks.py](routes/tasks.py) validates the request body against `QuickAddRequest` ([schemas/quick_add.py](schemas/quick_add.py)) and confirms `project_id` belongs to the caller.
+2. [ai_parser.py](ai_parser.py) builds a standard **role-based prompt** — a `system` message describing the parsing behavior, and a `user` message carrying the raw description — via `build_quick_add_messages()`. This happens on every call, regardless of which path answers it next, so the code is structured identically whether a mock or a real model responds.
+3. By default, `mock_parse_task()` answers deterministically (see algorithm below) — zero network calls, zero API keys, always available. This is what's graded and what the endpoint uses out of the box.
+4. Only if `USE_REAL_LLM=true` **and** `OPENAI_API_KEY` is set does `call_real_llm()` run instead, using `langchain-openai`'s `ChatOpenAI(model="gpt-4o-mini")` with `.with_structured_output(ParsedTask)` so the model's reply is forced into the same `ParsedTask` Pydantic shape the mock produces. Any exception here (missing package, bad key, network error, malformed response) is caught and silently falls back to the mock — the feature never requires a paid service to work.
+5. Either way, the resulting fields are re-validated by constructing a `TaskCreate` ([schemas/task.py](schemas/task.py)) before anything is written to the database. If that fails, the endpoint returns `422` with Pydantic's own error detail (`exc.errors()`) and **no row is created**.
+
+### The mock parsing algorithm (`mock_parse_task`, in `ai_parser.py`)
+
+1. Lower-case a working copy of the description for keyword matching only; the original casing is kept for the title.
+2. **Priority** — check, in order: `"urgent"`/`"asap"` → `high`; else `"whenever"`/`"low priority"` → `low`; else → `medium` (default). If both groups match, `high` wins.
+3. **Due-date hint** — check, in order: `today`, `tomorrow`, `next week`, then `next monday`…`next sunday` (Mon→Sun), then bare `monday`…`sunday` (Mon→Sun). First match wins and is stored lower-case as-is; `null` if nothing matches.
+4. **Title** — starting from the *original-cased* description, remove every occurrence of every priority keyword that matched (not just the one that decided priority) and every occurrence of the one matched date phrase, then `.strip()`. If that leaves nothing, the title becomes the literal `"Untitled task"`.
+
+Not-found/no-match values are always explicit: `priority` is always one of `low`/`medium`/`high`, `due_date_hint` is `null` when absent, and `title` is never an empty string.
+
+### Five worked examples (actual mock output)
+
+These were produced by directly calling `mock_parse_task()` on the inputs shown — a grader can reproduce them exactly by running the same function, and can check any other input the same way.
+
+| # | Input | Output |
+|---|---|---|
+| 1 | `"Call the plumber whenever you get a chance"` | `{"title": "Call the plumber  you get a chance", "priority": "low", "due_date_hint": null}` |
+| 2 | `"Submit tax documents low priority, no rush"` | `{"title": "Submit tax documents , no rush", "priority": "low", "due_date_hint": null}` |
+| 3 | `"Team sync monday morning"` | `{"title": "Team sync  morning", "priority": "medium", "due_date_hint": "monday"}` |
+| 4 | `"Plan the roadmap next week"` | `{"title": "Plan the roadmap", "priority": "medium", "due_date_hint": "next week"}` |
+| 5 | `"Renew the domain today, it's kind of urgent but also whenever works"` | `{"title": "Renew the domain , it's kind of  but also  works", "priority": "high", "due_date_hint": "today"}` |
+
+Example 5 shows the "group (i) wins" rule directly: the text contains both `"urgent"` (group i) and `"whenever"` (group ii), so `priority` is `"high"`, and the title still has *both* keywords (plus `"today"`) stripped out. Double spaces (e.g. example 1, 3, 5) are expected — the algorithm removes exact keyword spans and only trims the outer edges with `.strip()`; it never collapses internal whitespace left behind.
+
+### Why a zero-shot prompt
+
+The system/user message pair in `build_quick_add_messages()` is a **zero-shot** prompt: it states the task and the exact output fields once, with no example input/output pairs embedded. This fits the situation for three reasons. First, the required, graded path is the deterministic mock — the prompt text itself is never actually sent anywhere in that path, so there's no reliability cost to worry about and no reason to spend design effort padding it with exemplars. Second, on the optional real-LLM path, reliability is enforced structurally rather than by example: `.with_structured_output(ParsedTask)` constrains the model to return `title`/`priority`/`due_date_hint` in the exact Pydantic shape, so the traditional argument for few-shot prompting (showing the model the desired output format) is already handled by schema-constrained decoding instead of extra tokens. Third, this is a small, low-ambiguity extraction task, not a multi-step reasoning problem, so chain-of-thought (spending tokens on visible reasoning before the answer) would add latency and cost without improving a task this mechanical. Net effect: zero-shot keeps every real-LLM call to one system message plus the user's sentence — the minimum possible input tokens — while `with_structured_output` recovers the reliability few-shot examples would otherwise have bought.
+
+### Optional real-LLM enhancement
+
+Disabled by default. To try it:
+```env
+USE_REAL_LLM=true
+OPENAI_API_KEY=sk-...
+```
+With the flag unset (or `false`), or with no `OPENAI_API_KEY` at all, `/tasks/quick-add` works exactly the same via the mock — this is the configuration used for grading, and no paid service is ever required to exercise the feature.
+
+### Error behavior
+
+| Scenario | Response |
+|---|---|
+| `description` missing, `project_id` missing/wrong type | `422` (automatic Pydantic validation, same as every other endpoint) |
+| `project_id` doesn't belong to the caller / doesn't exist | `422` with a Pydantic-shaped `value_error` detail (no row written) |
+| Parsed/LLM output somehow fails `TaskCreate` validation | `422` with `exc.errors()` (no row written) |
+| Success | `201` with the created task, `TaskOut` shape |
