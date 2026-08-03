@@ -1,0 +1,8 @@
+TaskFlow algorithm benchmark - comparison counts
+Data: synthetic task records shaped like real rows (title, priority, due_date)
+
+     n |  insertion_sort |  binary (present) |  binary (absent) |  linear (present) |  linear (absent)
+------------------------------------------------------------------------------------------------------
+    10 |              25 |                 3 |                4 |                 5 |               10
+   500 |           43685 |                 8 |                9 |               186 |              500
+  3000 |         1507145 |                11 |               12 |                83 |             3000

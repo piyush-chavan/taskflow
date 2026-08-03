@@ -18,5 +18,8 @@ class Settings:
         if origin.strip()
     ]
 
+    USE_REAL_LLM = os.getenv("USE_REAL_LLM", "false").strip().lower() in ("1", "true", "yes")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 
 settings = Settings()

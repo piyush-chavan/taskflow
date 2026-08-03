@@ -17,6 +17,9 @@ backend/
 ├── main.py               # App entrypoint: middleware, CORS, routers, /health
 ├── models.py              # SQLAlchemy models (User, Project, Task)
 ├── database_config.py     # DB engine/session setup
+├── algorithms.py          # Sort/search engine powering GET /tasks?sort=... and /tasks/search (Section 2)
+├── benchmark_algorithms.py # Comparison-counting benchmark for the engine above
+├── check_algorithms.py    # Automated PASS/FAIL checks for the engine above
 ├── core/
 │   ├── config.py           # Settings (JWT secret, algorithm, CORS origins)
 │   ├── security.py         # Password hashing + JWT create/decode
@@ -159,6 +162,9 @@ A logged-in user can only **read, update, or delete their own projects and tasks
 |---|---|---|---|
 | POST | `/tasks/` | Create a task in one of your projects | 201 |
 | GET | `/tasks/` | List tasks across your own projects | 200 |
+| GET | `/tasks/?sort=priority` | List, sorted by priority (see "Section 2" below) | 200 |
+| GET | `/tasks/?sort=due_date` | List, sorted by due date | 200 |
+| GET | `/tasks/search?title=...&algo=binary\|linear` | Exact-title lookup (see "Section 2" below) | 200 / 404 |
 | GET | `/tasks/{id}` | Get one of your tasks | 200 / 404 |
 | PUT | `/tasks/{id}` | Update one of your tasks | 200 / 404 |
 | DELETE | `/tasks/{id}` | Delete one of your tasks | 204 / 404 |
@@ -181,3 +187,67 @@ A logged-in user can only **read, update, or delete their own projects and tasks
 - `project_id` must reference a project you own, or the request fails with `404`.
 
 Any request body that fails these validation rules returns `422 Unprocessable Entity` with details on which field failed.
+
+---
+
+## Section 2 — Sorting & Search Engine
+
+Two `/tasks` endpoints are powered by a hand-rolled sorting/search engine ([algorithms.py](algorithms.py)) instead of Python's built-in `sorted()`/`list.sort()` or the database's `ORDER BY`. Both endpoints fetch real rows from the `tasks` table through the same `get_db`/`get_current_user` dependencies used everywhere else in this backend, scoped to the caller's own projects.
+
+### How it's wired in
+
+- **`GET /tasks/?sort=priority`** (and `?sort=due_date`) — [routes/tasks.py](routes/tasks.py) fetches the caller's tasks, maps `priority` to a comparable rank (`low=1, medium=2, high=3`) when sorting by priority, and calls `insertion_sort(records, key=...)` on the resulting list of dicts before returning it. The ordering seen by the client comes from that function call, not the DB or a built-in sort.
+- **`GET /tasks/search?title=<exact title>&algo=binary|linear`** (`algo` defaults to `binary`) — builds an in-memory index of `{"id": ..., "title": ...}` pairs from the caller's real tasks. For `algo=binary`, the index is sorted with `insertion_sort` and then probed with `binary_search`. For `algo=linear`, `linear_search` scans the unsorted index directly. Returns the matching task (`200`) or `404` if no task has that exact title.
+
+### The engine (`algorithms.py`)
+
+| Function | Contract |
+|---|---|
+| `insertion_sort(records, key)` | Sorts a list of dicts **in place** by `record[key]`; no return value. |
+| `binary_search(sorted_records, target_value, key)` | Returns the index of a match in an already-sorted list, or **`-1`** if absent. |
+| `linear_search(records, target_value, key)` | Scans in order, returns the index of the first match, or **`-1`** if absent. |
+| `insertion_sort_count(records, key)` | Same sort, but returns a single `int` — the comparison count. |
+| `binary_search_count(sorted_records, target_value, key)` | Returns `{"index": ..., "comparison_count": ...}`. |
+| `linear_search_count(records, target_value, key)` | Returns `{"index": ..., "comparison_count": ...}`. |
+
+**Not-found convention:** all four search variants use **`-1`** (never `None`) as the "no match" sentinel, both for the plain index return value and for the `"index"` key in the counting variants.
+
+### Complexity
+
+| Function | Best case | Worst case |
+|---|---|---|
+| `insertion_sort` | O(n) — list already in sorted order, inner loop exits on the first comparison each pass | O(n²) — list in reverse order, every element shifts all the way to the front |
+| `binary_search` | O(1) — target is at the middle of the first probe | O(log n) — target found only after halving the range down to one element |
+| `linear_search` | O(1) — target is the first element | O(n) — target is the last element or absent |
+
+### Benchmark — real counted comparisons
+
+Run with:
+```bash
+python benchmark_algorithms.py
+```
+
+This generates synthetic task records shaped exactly like real rows (`title`, `priority`, `due_date`) at three sizes, runs them through the Task 5 counting wrappers above (the same engine the live endpoints call), prints a table, and writes the raw numbers to [benchmark_results.txt](benchmark_results.txt). Actual output from a run in this repo:
+
+```
+     n |  insertion_sort |  binary (present) |  binary (absent) |  linear (present) |  linear (absent)
+------------------------------------------------------------------------------------------------------
+    10 |              25 |                 3 |                4 |                 5 |               10
+   500 |           43685 |                 8 |                9 |               186 |              500
+  3000 |         1507145 |                11 |               12 |                83 |             3000
+```
+
+(`insertion_sort` = comparisons to sort the priority-ranked list; `binary`/`linear` = comparisons to locate one title in the search index, for a present and an absent target.)
+
+### Is the upfront sort worth it?
+
+At the sizes a single TaskFlow project realistically holds (tens to a few hundred tasks), `insertion_sort`'s O(n²) cost is negligible — 25 comparisons at n=10, ~43,685 at n=500, both effectively instant — so resorting on every `GET /tasks?sort=...` call is clearly worth it: it's cheap and always reflects the latest data. The picture changes at n=3,000, where a full resort costs **1,507,145 comparisons** every single time the list is fetched; since teams list/sort their tasks many times a day but add or rename tasks far less often, repeating that O(n²) work from scratch on every read (rather than sorting once and caching the order, or moving to an O(n log n) sort) becomes wasteful once project sizes grow that large. For **search** specifically, the upfront sort is unambiguously worth it regardless of size: `binary_search` stayed at 11–12 comparisons at n=3,000 while `linear_search`'s worst case scanned all 3,000 — over **270x** fewer comparisons — and because searches happen far more often than title edits, that one-time sort pays for itself many times over.
+
+### Automated checks
+
+Run with:
+```bash
+python check_algorithms.py
+```
+
+Prints one `PASS`/`FAIL` line per case (empty/single-element `insertion_sort`, `binary_search` at first/middle/last index and absent, `insertion_sort_count`'s sort correctness and positive-int return, `binary_search_count`'s known-index result, and `linear_search_count`'s absent-value result) using plain `if/else` — no `assert`, `pytest`, or `unittest`. All 12 cases currently pass.
