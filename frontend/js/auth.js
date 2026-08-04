@@ -42,14 +42,15 @@ function wireLoginForm(form) {
     if (!valid) return;
 
     const submitBtn = form.querySelector("button[type=submit]");
-    submitBtn.disabled = true;
 
     try {
-      const data = await apiRequest("/auth/login", {
-        method: "POST",
-        auth: false,
-        body: { email, password },
-      });
+      const data = await withButtonLoading(submitBtn, "Logging in...", () =>
+        apiRequest("/auth/login", {
+          method: "POST",
+          auth: false,
+          body: { email, password },
+        })
+      );
       setToken(data.access_token);
       showToast("Logged in successfully", "success");
       setTimeout(() => {
@@ -57,7 +58,6 @@ function wireLoginForm(form) {
       }, 500);
     } catch (err) {
       showToast(err.message, "error");
-      submitBtn.disabled = false;
     }
   });
 }
@@ -97,21 +97,22 @@ function wireRegisterForm(form) {
     if (!valid) return;
 
     const submitBtn = form.querySelector("button[type=submit]");
-    submitBtn.disabled = true;
 
     try {
-      await apiRequest("/auth/register", {
-        method: "POST",
-        auth: false,
-        body: { name, email, password },
-      });
+      await withButtonLoading(submitBtn, "Creating account...", async () => {
+        await apiRequest("/auth/register", {
+          method: "POST",
+          auth: false,
+          body: { name, email, password },
+        });
 
-      const loginData = await apiRequest("/auth/login", {
-        method: "POST",
-        auth: false,
-        body: { email, password },
+        const loginData = await apiRequest("/auth/login", {
+          method: "POST",
+          auth: false,
+          body: { email, password },
+        });
+        setToken(loginData.access_token);
       });
-      setToken(loginData.access_token);
 
       showToast("Account created — welcome to TaskFlow!", "success");
       setTimeout(() => {
@@ -119,7 +120,6 @@ function wireRegisterForm(form) {
       }, 500);
     } catch (err) {
       showToast(err.message, "error");
-      submitBtn.disabled = false;
     }
   });
 }

@@ -116,8 +116,19 @@
       </form>
     </div>
 
+    <div id="project-stats" class="stats-panel"></div>
+
     <div class="task-list-heading">
       <h2>Tasks</h2>
+      <div class="sort-toggle" role="group" aria-label="Sort tasks">
+        <span class="sort-toggle-label">Sort by</span>
+        <button type="button" id="sort-priority-btn" class="toggle-btn" data-sort="priority">
+          <i class="fa-solid fa-arrow-down-wide-short"></i> Priority
+        </button>
+        <button type="button" id="sort-due-date-btn" class="toggle-btn" data-sort="due_date">
+          <i class="fa-regular fa-calendar"></i> Due date
+        </button>
+      </div>
     </div>
     <div id="task-list" class="task-list"></div>
     <p id="task-list-empty" class="empty-state hidden">
@@ -133,6 +144,7 @@
 <script src="js/storage.js"></script>
 <script src="js/api.js"></script>
 <script src="js/toast.js"></script>
+<script src="js/ui-utils.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

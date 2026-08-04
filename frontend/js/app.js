@@ -1,9 +1,11 @@
 // Dashboard logic for index.html: projects list -> tasks list, add/edit/delete,
-// AI quick-add, and localStorage caching so the page is never blank on load.
+// AI quick-add, sorting, stats, and localStorage caching so the page is never
+// blank on load.
 
 let currentProjects = [];
 let currentProject = null;
 let currentTasks = [];
+let currentSort = null; // null | "priority" | "due_date"
 
 document.addEventListener("DOMContentLoaded", () => {
   if (!getToken()) {
@@ -16,6 +18,7 @@ document.addEventListener("DOMContentLoaded", () => {
   wireAddTaskForm();
   wireQuickAddForm();
   wireBackButton();
+  wireSortToggle();
 
   // Render whatever we have cached immediately, so the page is never blank
   // while the live request below is in flight.
@@ -56,16 +59,60 @@ async function loadProjects() {
       apiRequest("/projects/stats"),
     ]);
 
-    const taskCounts = new Map(stats.map((s) => [s.project_id, s.total_tasks]));
-    currentProjects = projects.map((project) => ({
-      ...project,
-      taskCount: taskCounts.get(project.id) ?? 0,
-    }));
+    const statsByProject = new Map(stats.map((s) => [s.project_id, s]));
+    currentProjects = projects.map((project) => {
+      const projectStats = statsByProject.get(project.id) || {
+        project_id: project.id,
+        project_name: project.name,
+        total_tasks: 0,
+        by_status: [],
+      };
+      return { ...project, taskCount: projectStats.total_tasks, stats: projectStats };
+    });
 
     setCachedProjects(currentProjects);
     renderProjects(currentProjects);
+
+    // Keep the open project's stats panel in sync if we're inside a project.
+    if (currentProject) {
+      const refreshed = currentProjects.find((p) => p.id === currentProject.id);
+      if (refreshed) {
+        currentProject = refreshed;
+        renderProjectStats(currentProject.stats);
+      }
+    }
   } catch (err) {
     showToast(err.message, "error");
+  }
+}
+
+// Re-fetches just the stats endpoint and updates the open project's panel +
+// its task count badge back on the projects grid, without refetching tasks.
+async function refreshCurrentProjectStats() {
+  if (!currentProject) return;
+
+  try {
+    const stats = await apiRequest("/projects/stats");
+    const match = stats.find((s) => s.project_id === currentProject.id) || {
+      project_id: currentProject.id,
+      project_name: currentProject.name,
+      total_tasks: 0,
+      by_status: [],
+    };
+
+    currentProject.stats = match;
+    currentProject.taskCount = match.total_tasks;
+    renderProjectStats(match);
+
+    const projectInList = currentProjects.find((p) => p.id === currentProject.id);
+    if (projectInList) {
+      projectInList.stats = match;
+      projectInList.taskCount = match.total_tasks;
+      setCachedProjects(currentProjects);
+    }
+  } catch (err) {
+    // Non-fatal: the primary action already succeeded and reported its own
+    // toast, so a failed stats refresh just leaves the panel momentarily stale.
   }
 }
 
@@ -103,7 +150,7 @@ function createProjectCard(project) {
   deleteBtn.appendChild(trashIcon);
   deleteBtn.addEventListener("click", (event) => {
     event.stopPropagation();
-    handleDeleteProject(project);
+    handleDeleteProject(project, deleteBtn);
   });
   header.appendChild(deleteBtn);
 
@@ -141,6 +188,7 @@ function wireAddProjectForm() {
   const nameInput = document.getElementById("project-name-input");
   const descriptionInput = document.getElementById("project-description-input");
   const errorEl = document.getElementById("project-name-error");
+  const submitBtn = form.querySelector("button[type=submit]");
 
   nameInput.addEventListener("input", () => {
     if (nameInput.value.trim()) errorEl.textContent = "";
@@ -157,11 +205,14 @@ function wireAddProjectForm() {
     errorEl.textContent = "";
 
     try {
-      const created = await apiRequest("/projects/", {
-        method: "POST",
-        body: { name, description: descriptionInput.value.trim() || null },
-      });
+      const created = await withButtonLoading(submitBtn, "Adding...", () =>
+        apiRequest("/projects/", {
+          method: "POST",
+          body: { name, description: descriptionInput.value.trim() || null },
+        })
+      );
       created.taskCount = 0;
+      created.stats = { project_id: created.id, project_name: created.name, total_tasks: 0, by_status: [] };
       currentProjects.push(created);
       setCachedProjects(currentProjects);
       renderProjects(currentProjects);
@@ -173,10 +224,11 @@ function wireAddProjectForm() {
   });
 }
 
-async function handleDeleteProject(project) {
+async function handleDeleteProject(project, button) {
   if (!window.confirm(`Delete project "${project.name}" and all its tasks?`)) return;
 
   try {
+    setIconButtonLoading(button, true);
     await apiRequest(`/projects/${project.id}`, { method: "DELETE" });
     currentProjects = currentProjects.filter((p) => p.id !== project.id);
     setCachedProjects(currentProjects);
@@ -184,6 +236,7 @@ async function handleDeleteProject(project) {
     showToast("Project deleted", "success");
   } catch (err) {
     showToast(err.message, "error");
+    setIconButtonLoading(button, false);
   }
 }
 
@@ -191,32 +244,41 @@ async function handleDeleteProject(project) {
 
 function selectProject(project) {
   currentProject = project;
+  currentSort = null;
+  resetSortToggleUI();
 
   document.getElementById("projects-view").classList.add("hidden");
   document.getElementById("tasks-view").classList.remove("hidden");
   document.getElementById("tasks-project-name").textContent = project.name;
   document.getElementById("tasks-project-description").textContent = project.description || "";
 
-  // Show the cached copy immediately, then refresh from the live backend.
+  // Show whatever we already know immediately (cached tasks, cached stats),
+  // then refresh both from the live backend.
   const cached = getCachedTasks(project.id);
   currentTasks = cached || [];
   renderTasks(currentTasks);
+  renderProjectStats(project.stats || { total_tasks: project.taskCount ?? 0, by_status: [] });
 
   loadTasksForProject(project.id);
+  refreshCurrentProjectStats();
 }
 
 function wireBackButton() {
-  document.getElementById("back-to-projects").addEventListener("click", () => {
+  const backBtn = document.getElementById("back-to-projects");
+
+  backBtn.addEventListener("click", async () => {
     currentProject = null;
     document.getElementById("tasks-view").classList.add("hidden");
     document.getElementById("projects-view").classList.remove("hidden");
-    loadProjects();
+
+    await withButtonLoading(backBtn, "Loading...", () => loadProjects());
   });
 }
 
 async function loadTasksForProject(projectId) {
   try {
-    const allTasks = await apiRequest("/tasks/");
+    const query = currentSort ? `?sort=${currentSort}` : "";
+    const allTasks = await apiRequest(`/tasks/${query}`);
     const tasks = allTasks.filter((task) => task.project_id === projectId);
     currentTasks = tasks;
     setCachedTasks(projectId, tasks);
@@ -231,6 +293,93 @@ function persistTaskCache() {
     setCachedTasks(currentProject.id, currentTasks);
   }
 }
+
+/* ---------- Sorting ---------- */
+
+function wireSortToggle() {
+  const priorityBtn = document.getElementById("sort-priority-btn");
+  const dueDateBtn = document.getElementById("sort-due-date-btn");
+
+  priorityBtn.addEventListener("click", () => handleSortToggle("priority", priorityBtn, dueDateBtn));
+  dueDateBtn.addEventListener("click", () => handleSortToggle("due_date", dueDateBtn, priorityBtn));
+}
+
+function resetSortToggleUI() {
+  document.getElementById("sort-priority-btn").classList.remove("active");
+  document.getElementById("sort-due-date-btn").classList.remove("active");
+}
+
+async function handleSortToggle(sortValue, clickedBtn, otherBtn) {
+  if (!currentProject) return;
+
+  currentSort = currentSort === sortValue ? null : sortValue;
+  clickedBtn.classList.toggle("active", currentSort === sortValue);
+  otherBtn.classList.remove("active");
+
+  otherBtn.disabled = true;
+  setIconButtonLoading(clickedBtn, true);
+  try {
+    await loadTasksForProject(currentProject.id);
+  } finally {
+    setIconButtonLoading(clickedBtn, false);
+    otherBtn.disabled = false;
+  }
+}
+
+/* ---------- Stats panel ---------- */
+
+function renderProjectStats(stats) {
+  const panel = document.getElementById("project-stats");
+  if (!panel || !stats) return;
+  panel.replaceChildren();
+
+  panel.appendChild(
+    createStatTile("Total tasks", stats.total_tasks ?? 0, "fa-solid fa-list-check")
+  );
+
+  (stats.by_status || []).forEach((entry) => {
+    panel.appendChild(
+      createStatTile(formatStatusLabel(entry.status), entry.count, statusIcon(entry.status))
+    );
+  });
+}
+
+function createStatTile(label, value, iconClass) {
+  const tile = document.createElement("div");
+  tile.className = "stat-tile";
+
+  const icon = document.createElement("i");
+  icon.className = iconClass;
+  tile.appendChild(icon);
+
+  const textWrap = document.createElement("div");
+  textWrap.className = "stat-tile-text";
+
+  const valueEl = document.createElement("span");
+  valueEl.className = "stat-value";
+  valueEl.textContent = value;
+  textWrap.appendChild(valueEl);
+
+  const labelEl = document.createElement("span");
+  labelEl.className = "stat-label";
+  labelEl.textContent = label;
+  textWrap.appendChild(labelEl);
+
+  tile.appendChild(textWrap);
+  return tile;
+}
+
+function formatStatusLabel(status) {
+  return status.replace("_", " ");
+}
+
+function statusIcon(status) {
+  if (status === "completed") return "fa-solid fa-circle-check";
+  if (status === "in_progress") return "fa-solid fa-spinner";
+  return "fa-solid fa-hourglass-half";
+}
+
+/* ---------- Rendering task items ---------- */
 
 function renderTasks(tasks) {
   const list = document.getElementById("task-list");
@@ -327,7 +476,7 @@ function renderTaskView(item, task) {
   const deleteIcon = document.createElement("i");
   deleteIcon.className = "fa-solid fa-trash";
   deleteBtn.appendChild(deleteIcon);
-  deleteBtn.addEventListener("click", () => handleDeleteTask(task));
+  deleteBtn.addEventListener("click", () => handleDeleteTask(task, deleteBtn));
   actions.appendChild(deleteBtn);
 
   item.replaceChildren(main, actions);
@@ -417,22 +566,25 @@ function renderTaskEdit(item, task) {
     titleError.textContent = "";
 
     try {
-      const updated = await apiRequest(`/tasks/${task.id}`, {
-        method: "PUT",
-        body: {
-          title: trimmedTitle,
-          description: descInput.value.trim() || null,
-          due_date: dueInput.value.trim() || null,
-          priority: prioritySelect.value,
-          status: statusSelect.value,
-        },
-      });
+      const updated = await withButtonLoading(saveBtn, "Saving...", () =>
+        apiRequest(`/tasks/${task.id}`, {
+          method: "PUT",
+          body: {
+            title: trimmedTitle,
+            description: descInput.value.trim() || null,
+            due_date: dueInput.value.trim() || null,
+            priority: prioritySelect.value,
+            status: statusSelect.value,
+          },
+        })
+      );
 
       const index = currentTasks.findIndex((t) => t.id === task.id);
       if (index !== -1) currentTasks[index] = updated;
       persistTaskCache();
       renderTasks(currentTasks);
       showToast("Task updated", "success");
+      refreshCurrentProjectStats();
     } catch (err) {
       showToast(err.message, "error");
     }
@@ -441,17 +593,20 @@ function renderTaskEdit(item, task) {
   item.replaceChildren(form);
 }
 
-async function handleDeleteTask(task) {
+async function handleDeleteTask(task, button) {
   if (!window.confirm(`Delete "${task.title}"?`)) return;
 
   try {
+    setIconButtonLoading(button, true);
     await apiRequest(`/tasks/${task.id}`, { method: "DELETE" });
     currentTasks = currentTasks.filter((t) => t.id !== task.id);
     persistTaskCache();
     renderTasks(currentTasks);
     showToast("Task deleted", "success");
+    refreshCurrentProjectStats();
   } catch (err) {
     showToast(err.message, "error");
+    setIconButtonLoading(button, false);
   }
 }
 
@@ -462,6 +617,7 @@ function wireAddTaskForm() {
   const descriptionInput = document.getElementById("task-description-input");
   const dueDateInput = document.getElementById("task-due-date-input");
   const priorityInput = document.getElementById("task-priority-input");
+  const submitBtn = form.querySelector("button[type=submit]");
 
   titleInput.addEventListener("input", () => {
     if (titleInput.value.trim()) titleError.textContent = "";
@@ -480,16 +636,18 @@ function wireAddTaskForm() {
     titleError.textContent = "";
 
     try {
-      const created = await apiRequest("/tasks/", {
-        method: "POST",
-        body: {
-          title,
-          description: descriptionInput.value.trim() || null,
-          priority: priorityInput.value,
-          due_date: dueDateInput.value.trim() || null,
-          project_id: currentProject.id,
-        },
-      });
+      const created = await withButtonLoading(submitBtn, "Adding...", () =>
+        apiRequest("/tasks/", {
+          method: "POST",
+          body: {
+            title,
+            description: descriptionInput.value.trim() || null,
+            priority: priorityInput.value,
+            due_date: dueDateInput.value.trim() || null,
+            project_id: currentProject.id,
+          },
+        })
+      );
 
       currentTasks.push(created);
       persistTaskCache();
@@ -497,6 +655,7 @@ function wireAddTaskForm() {
       form.reset();
       priorityInput.value = "medium";
       showToast("Task added", "success");
+      refreshCurrentProjectStats();
     } catch (err) {
       showToast(err.message, "error");
     }
@@ -507,6 +666,7 @@ function wireQuickAddForm() {
   const form = document.getElementById("quick-add-form");
   const descriptionInput = document.getElementById("quick-add-input");
   const errorEl = document.getElementById("quick-add-error");
+  const submitBtn = form.querySelector("button[type=submit]");
 
   descriptionInput.addEventListener("input", () => {
     if (descriptionInput.value.trim()) errorEl.textContent = "";
@@ -525,16 +685,19 @@ function wireQuickAddForm() {
     errorEl.textContent = "";
 
     try {
-      const created = await apiRequest("/tasks/quick-add", {
-        method: "POST",
-        body: { description, project_id: currentProject.id },
-      });
+      const created = await withButtonLoading(submitBtn, "Adding...", () =>
+        apiRequest("/tasks/quick-add", {
+          method: "POST",
+          body: { description, project_id: currentProject.id },
+        })
+      );
 
       currentTasks.push(created);
       persistTaskCache();
       renderTasks(currentTasks);
       form.reset();
       showToast(`Task added via AI: "${created.title}"`, "success");
+      refreshCurrentProjectStats();
     } catch (err) {
       showToast(err.message, "error");
     }
