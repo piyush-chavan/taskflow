@@ -6,6 +6,7 @@ let currentProjects = [];
 let currentProject = null;
 let currentTasks = [];
 let currentSort = null; // null | "priority" | "due_date"
+let searchDebounceTimer = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   if (!getToken()) {
@@ -19,6 +20,8 @@ document.addEventListener("DOMContentLoaded", () => {
   wireQuickAddForm();
   wireBackButton();
   wireSortToggle();
+  wireSearch();
+  wireAddTaskModal();
 
   // Render whatever we have cached immediately, so the page is never blank
   // while the live request below is in flight.
@@ -176,6 +179,13 @@ function createProjectCard(project) {
   countBadge.appendChild(countText);
   footer.appendChild(countBadge);
 
+  const statusCounts = new Map(
+    (project.stats?.by_status || []).map((entry) => [entry.status, entry.count])
+  );
+  ["pending", "in_progress", "completed"].forEach((status) => {
+    footer.appendChild(createStatusCountBadge(status, statusCounts.get(status) ?? 0));
+  });
+
   card.appendChild(footer);
 
   card.addEventListener("click", () => selectProject(project));
@@ -240,12 +250,42 @@ async function handleDeleteProject(project, button) {
   }
 }
 
+/* ===================== Add task modal ===================== */
+
+function wireAddTaskModal() {
+  const modal = document.getElementById("add-task-modal");
+  const openBtn = document.getElementById("open-add-task-btn");
+  const closeBtn = document.getElementById("close-add-task-modal-btn");
+
+  openBtn.addEventListener("click", () => openAddTaskModal());
+  closeBtn.addEventListener("click", () => closeAddTaskModal());
+
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal) closeAddTaskModal();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !modal.classList.contains("hidden")) {
+      closeAddTaskModal();
+    }
+  });
+}
+
+function openAddTaskModal() {
+  document.getElementById("add-task-modal").classList.remove("hidden");
+}
+
+function closeAddTaskModal() {
+  document.getElementById("add-task-modal").classList.add("hidden");
+}
+
 /* ===================== Tasks ===================== */
 
 function selectProject(project) {
   currentProject = project;
   currentSort = null;
   resetSortToggleUI();
+  resetSearchUI();
 
   document.getElementById("projects-view").classList.add("hidden");
   document.getElementById("tasks-view").classList.remove("hidden");
@@ -256,7 +296,7 @@ function selectProject(project) {
   // then refresh both from the live backend.
   const cached = getCachedTasks(project.id);
   currentTasks = cached || [];
-  renderTasks(currentTasks);
+  applySearchFilter();
   renderProjectStats(project.stats || { total_tasks: project.taskCount ?? 0, by_status: [] });
 
   loadTasksForProject(project.id);
@@ -282,7 +322,7 @@ async function loadTasksForProject(projectId) {
     const tasks = allTasks.filter((task) => task.project_id === projectId);
     currentTasks = tasks;
     setCachedTasks(projectId, tasks);
-    renderTasks(currentTasks);
+    applySearchFilter();
   } catch (err) {
     showToast(err.message, "error");
   }
@@ -323,6 +363,82 @@ async function handleSortToggle(sortValue, clickedBtn, otherBtn) {
   } finally {
     setIconButtonLoading(clickedBtn, false);
     otherBtn.disabled = false;
+  }
+}
+
+/* ---------- Search ---------- */
+
+function wireSearch() {
+  const searchInput = document.getElementById("task-search-input");
+  const exactToggle = document.getElementById("exact-search-toggle");
+
+  searchInput.addEventListener("input", () => scheduleSearch());
+  exactToggle.addEventListener("change", () => scheduleSearch());
+}
+
+function resetSearchUI() {
+  document.getElementById("task-search-input").value = "";
+  document.getElementById("exact-search-toggle").checked = false;
+}
+
+function scheduleSearch() {
+  const exactToggle = document.getElementById("exact-search-toggle");
+  clearTimeout(searchDebounceTimer);
+
+  if (exactToggle.checked) {
+    // Debounce the exact mode since it hits the backend on every change.
+    searchDebounceTimer = setTimeout(applySearchFilter, 350);
+  } else {
+    applySearchFilter();
+  }
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Single rendering entry point once a project's tasks are loaded: decides
+// whether to show the full list, a partial-match (frontend regex) subset,
+// or an exact-match (backend) result, based on the current search UI state.
+async function applySearchFilter() {
+  const searchInput = document.getElementById("task-search-input");
+  const exactToggle = document.getElementById("exact-search-toggle");
+  const query = searchInput.value.trim();
+
+  if (!query) {
+    renderTasks(currentTasks);
+    return;
+  }
+
+  if (!exactToggle.checked) {
+    let regex = null;
+    try {
+      regex = new RegExp(escapeRegExp(query), "i");
+    } catch (err) {
+      regex = null;
+    }
+    const filtered = currentTasks.filter((task) =>
+      regex ? regex.test(task.title) : task.title.toLowerCase().includes(query.toLowerCase())
+    );
+    renderTasks(filtered);
+    return;
+  }
+
+  if (!currentProject) return;
+
+  try {
+    const result = await apiRequest(`/tasks/search?title=${encodeURIComponent(query)}&algo=binary`);
+    if (result && result.project_id === currentProject.id) {
+      renderTasks([result]);
+    } else {
+      renderTasks([]);
+    }
+  } catch (err) {
+    if (err.status === 404) {
+      renderTasks([]);
+    } else {
+      showToast(err.message, "error");
+    }
   }
 }
 
@@ -377,6 +493,21 @@ function statusIcon(status) {
   if (status === "completed") return "fa-solid fa-circle-check";
   if (status === "in_progress") return "fa-solid fa-spinner";
   return "fa-solid fa-hourglass-half";
+}
+
+function createStatusCountBadge(status, count) {
+  const badge = document.createElement("span");
+  badge.className = `badge badge-status-${status}`;
+
+  const icon = document.createElement("i");
+  icon.className = statusIcon(status);
+  badge.appendChild(icon);
+
+  const text = document.createElement("span");
+  text.textContent = `${count} ${formatStatusLabel(status)}`;
+  badge.appendChild(text);
+
+  return badge;
 }
 
 /* ---------- Rendering task items ---------- */
@@ -582,7 +713,7 @@ function renderTaskEdit(item, task) {
       const index = currentTasks.findIndex((t) => t.id === task.id);
       if (index !== -1) currentTasks[index] = updated;
       persistTaskCache();
-      renderTasks(currentTasks);
+      applySearchFilter();
       showToast("Task updated", "success");
       refreshCurrentProjectStats();
     } catch (err) {
@@ -601,7 +732,7 @@ async function handleDeleteTask(task, button) {
     await apiRequest(`/tasks/${task.id}`, { method: "DELETE" });
     currentTasks = currentTasks.filter((t) => t.id !== task.id);
     persistTaskCache();
-    renderTasks(currentTasks);
+    applySearchFilter();
     showToast("Task deleted", "success");
     refreshCurrentProjectStats();
   } catch (err) {
@@ -651,11 +782,12 @@ function wireAddTaskForm() {
 
       currentTasks.push(created);
       persistTaskCache();
-      renderTasks(currentTasks);
+      applySearchFilter();
       form.reset();
       priorityInput.value = "medium";
       showToast("Task added", "success");
       refreshCurrentProjectStats();
+      closeAddTaskModal();
     } catch (err) {
       showToast(err.message, "error");
     }
@@ -694,10 +826,11 @@ function wireQuickAddForm() {
 
       currentTasks.push(created);
       persistTaskCache();
-      renderTasks(currentTasks);
+      applySearchFilter();
       form.reset();
       showToast(`Task added via AI: "${created.title}"`, "success");
       refreshCurrentProjectStats();
+      closeAddTaskModal();
     } catch (err) {
       showToast(err.message, "error");
     }

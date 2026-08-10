@@ -41,7 +41,9 @@ async function apiRequest(path, { method = "GET", body, auth = true } = {}) {
   }
 
   if (!response.ok) {
-    throw new Error(extractErrorMessage(data, response.status));
+    const error = new Error(extractErrorMessage(data, response.status));
+    error.status = response.status;
+    throw error;
   }
 
   return data;

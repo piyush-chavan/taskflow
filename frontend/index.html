@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TaskFlow — Dashboard</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23f97316'/%3E%3Cpath d='M55 15 L28 55 H48 L42 85 L74 42 H52 Z' fill='white'/%3E%3C/svg%3E">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -58,9 +59,59 @@
       <i class="fa-solid fa-arrow-left"></i> Back to projects
     </button>
 
-    <div class="view-heading">
-      <h1 id="tasks-project-name"></h1>
-      <p class="view-subtitle" id="tasks-project-description"></p>
+    <div class="view-heading tasks-heading-row">
+      <div>
+        <h1 id="tasks-project-name"></h1>
+        <p class="view-subtitle" id="tasks-project-description"></p>
+      </div>
+      <button type="button" id="open-add-task-btn" class="btn btn-primary">
+        <i class="fa-solid fa-plus"></i> Add new task
+      </button>
+    </div>
+
+    <div id="project-stats" class="stats-panel"></div>
+
+    <div class="task-list-heading">
+      <h2>Tasks</h2>
+      <div class="task-list-controls">
+        <div class="search-group">
+          <div class="search-bar">
+            <i class="fa-solid fa-magnifying-glass search-icon"></i>
+            <input type="text" id="task-search-input" placeholder="Search by title...">
+          </div>
+          <label class="toggle-switch" for="exact-search-toggle">
+            <input type="checkbox" id="exact-search-toggle">
+            <span class="toggle-switch-track"><span class="toggle-switch-thumb"></span></span>
+            <span class="toggle-switch-text">Exact search</span>
+          </label>
+        </div>
+        <div class="sort-toggle" role="group" aria-label="Sort tasks">
+          <span class="sort-toggle-label">Sort by</span>
+          <button type="button" id="sort-priority-btn" class="toggle-btn" data-sort="priority">
+            <i class="fa-solid fa-arrow-down-wide-short"></i> Priority
+          </button>
+          <button type="button" id="sort-due-date-btn" class="toggle-btn" data-sort="due_date">
+            <i class="fa-regular fa-calendar"></i> Due date
+          </button>
+        </div>
+      </div>
+    </div>
+    <div id="task-list" class="task-list"></div>
+    <p id="task-list-empty" class="empty-state hidden">
+      <i class="fa-regular fa-clipboard"></i> No tasks yet — add your first one above.
+    </p>
+  </section>
+
+</main>
+
+<!-- ===== Add task modal ===== -->
+<div id="add-task-modal" class="modal-overlay hidden">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-task-modal-title">
+    <div class="modal-header">
+      <h2 id="add-task-modal-title">Add a new task</h2>
+      <button type="button" id="close-add-task-modal-btn" class="icon-btn" title="Close">
+        <i class="fa-solid fa-xmark"></i>
+      </button>
     </div>
 
     <div class="task-forms">
@@ -115,28 +166,8 @@
         </button>
       </form>
     </div>
-
-    <div id="project-stats" class="stats-panel"></div>
-
-    <div class="task-list-heading">
-      <h2>Tasks</h2>
-      <div class="sort-toggle" role="group" aria-label="Sort tasks">
-        <span class="sort-toggle-label">Sort by</span>
-        <button type="button" id="sort-priority-btn" class="toggle-btn" data-sort="priority">
-          <i class="fa-solid fa-arrow-down-wide-short"></i> Priority
-        </button>
-        <button type="button" id="sort-due-date-btn" class="toggle-btn" data-sort="due_date">
-          <i class="fa-regular fa-calendar"></i> Due date
-        </button>
-      </div>
-    </div>
-    <div id="task-list" class="task-list"></div>
-    <p id="task-list-empty" class="empty-state hidden">
-      <i class="fa-regular fa-clipboard"></i> No tasks yet — add your first one above.
-    </p>
-  </section>
-
-</main>
+  </div>
+</div>
 
 <div id="toast-container" class="toast-container"></div>
 
@@ -144,6 +175,7 @@
 <script src="js/storage.js"></script>
 <script src="js/api.js"></script>
 <script src="js/toast.js"></script>
+<script src="js/server-status.js"></script>
 <script src="js/ui-utils.js"></script>
 <script src="js/app.js"></script>
 </body>
