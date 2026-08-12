@@ -8,6 +8,10 @@ let currentTasks = [];
 let currentSort = null; // null | "priority" | "due_date"
 let searchDebounceTimer = null;
 
+const TASKS_PER_PAGE = 6;
+let visibleTasks = [];
+let currentPage = 1;
+
 document.addEventListener("DOMContentLoaded", () => {
   if (!getToken()) {
     window.location.href = "login.html";
@@ -22,6 +26,7 @@ document.addEventListener("DOMContentLoaded", () => {
   wireSortToggle();
   wireSearch();
   wireAddTaskModal();
+  wirePagination();
 
   // Render whatever we have cached immediately, so the page is never blank
   // while the live request below is in flight.
@@ -513,17 +518,62 @@ function createStatusCountBadge(status, count) {
 /* ---------- Rendering task items ---------- */
 
 function renderTasks(tasks) {
+  visibleTasks = tasks || [];
+  currentPage = 1;
+  renderCurrentPage();
+}
+
+function renderCurrentPage() {
   const list = document.getElementById("task-list");
   const empty = document.getElementById("task-list-empty");
+  const pagination = document.getElementById("task-pagination");
   list.replaceChildren();
 
-  if (!tasks || tasks.length === 0) {
+  if (visibleTasks.length === 0) {
     empty.classList.remove("hidden");
+    pagination.classList.add("hidden");
     return;
   }
   empty.classList.add("hidden");
 
-  tasks.forEach((task) => list.appendChild(createTaskElement(task)));
+  const totalPages = Math.max(1, Math.ceil(visibleTasks.length / TASKS_PER_PAGE));
+  if (currentPage > totalPages) currentPage = totalPages;
+  if (currentPage < 1) currentPage = 1;
+
+  const start = (currentPage - 1) * TASKS_PER_PAGE;
+  const pageItems = visibleTasks.slice(start, start + TASKS_PER_PAGE);
+  pageItems.forEach((task) => list.appendChild(createTaskElement(task)));
+
+  updatePaginationControls(totalPages);
+}
+
+function updatePaginationControls(totalPages) {
+  const pagination = document.getElementById("task-pagination");
+  const indicator = document.getElementById("task-page-indicator");
+  const prevBtn = document.getElementById("task-prev-page-btn");
+  const nextBtn = document.getElementById("task-next-page-btn");
+
+  if (totalPages <= 1) {
+    pagination.classList.add("hidden");
+    return;
+  }
+
+  pagination.classList.remove("hidden");
+  indicator.textContent = `Page ${currentPage} of ${totalPages}`;
+  prevBtn.disabled = currentPage === 1;
+  nextBtn.disabled = currentPage === totalPages;
+}
+
+function wirePagination() {
+  document.getElementById("task-prev-page-btn").addEventListener("click", () => {
+    currentPage -= 1;
+    renderCurrentPage();
+  });
+
+  document.getElementById("task-next-page-btn").addEventListener("click", () => {
+    currentPage += 1;
+    renderCurrentPage();
+  });
 }
 
 function createTaskElement(task) {
@@ -613,29 +663,38 @@ function renderTaskView(item, task) {
   item.replaceChildren(main, actions);
 }
 
+function createOutlinedField(labelText, inputEl) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "field-outlined";
+
+  const label = document.createElement("label");
+  label.textContent = labelText;
+
+  wrapper.appendChild(inputEl);
+  wrapper.appendChild(label);
+  return wrapper;
+}
+
 function renderTaskEdit(item, task) {
   const form = document.createElement("form");
   form.className = "task-edit-form";
 
-  const titleField = document.createElement("div");
-  titleField.className = "field";
   const titleInput = document.createElement("input");
   titleInput.type = "text";
   titleInput.value = task.title;
+  const titleField = createOutlinedField("Title", titleInput);
   const titleError = document.createElement("span");
   titleError.className = "field-error";
   titleInput.addEventListener("input", () => {
     if (titleInput.value.trim()) titleError.textContent = "";
   });
-  titleField.appendChild(titleInput);
   titleField.appendChild(titleError);
   form.appendChild(titleField);
 
   const descInput = document.createElement("textarea");
   descInput.rows = 2;
   descInput.value = task.description || "";
-  descInput.placeholder = "Description (optional)";
-  form.appendChild(descInput);
+  form.appendChild(createOutlinedField("Description", descInput));
 
   const row = document.createElement("div");
   row.className = "field-row";
@@ -643,8 +702,7 @@ function renderTaskEdit(item, task) {
   const dueInput = document.createElement("input");
   dueInput.type = "text";
   dueInput.value = task.due_date || "";
-  dueInput.placeholder = "Due date";
-  row.appendChild(dueInput);
+  row.appendChild(createOutlinedField("Due date", dueInput));
 
   const prioritySelect = document.createElement("select");
   ["low", "medium", "high"].forEach((value) => {
@@ -654,7 +712,7 @@ function renderTaskEdit(item, task) {
     if (value === task.priority) option.selected = true;
     prioritySelect.appendChild(option);
   });
-  row.appendChild(prioritySelect);
+  row.appendChild(createOutlinedField("Priority", prioritySelect));
 
   const statusSelect = document.createElement("select");
   ["pending", "in_progress", "completed"].forEach((value) => {
@@ -664,7 +722,7 @@ function renderTaskEdit(item, task) {
     if (value === task.status) option.selected = true;
     statusSelect.appendChild(option);
   });
-  row.appendChild(statusSelect);
+  row.appendChild(createOutlinedField("Status", statusSelect));
 
   form.appendChild(row);
 
