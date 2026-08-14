@@ -5,7 +5,7 @@ TaskFlow is a full-stack task and project management app: a FastAPI backend (JWT
 ## Live Demo
 
 - **Frontend:** https://taskflow-nine-rose.vercel.app/
-- **Backend API:** https://taskflow-backend-bju2.onrender.com (docs at `/docs`)
+- **Backend API:** https://taskflow-backend-bju2.onrender.com/docs (docs at `/docs`)
 
 > The backend is hosted on a free-tier service and spins down when idle — the first request after a while can take up to a minute to wake it up. The frontend shows a "Connecting to server..." toast while this happens.
 
@@ -204,194 +204,53 @@ All DOM rendering uses `document.createElement`/`appendChild`/`textContent` (no 
 
 ---
 
-## Developer
+## API Endpoints
 
-**Piyush Chavan**
-Education: B.Tech, Computer Science and Engineering — IIT Roorkee, 2026
+Full interactive API documentation (request/response schemas and a live "try it out" console) is available at the deployed Swagger UI: https://taskflow-backend-bju2.onrender.com/docs
+
+### Health
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/health` | Health check — confirms the API is reachable |
+
+### Auth
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/auth/register` | Create a new user account |
+| POST | `/auth/login` | Log in and receive a JWT access token |
+| GET | `/auth/me` | Get the currently authenticated user's profile |
+
+### Projects
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/projects/` | Create a new project |
+| GET | `/projects/` | List all projects owned by the current user |
+| GET | `/projects/stats` | Get task-count statistics (total + by status) for every project |
+| GET | `/projects/{project_id}` | Get a single project by ID |
+| PUT | `/projects/{project_id}` | Update a project's name/description |
+| DELETE | `/projects/{project_id}` | Delete a project and all of its tasks |
+
+### Tasks
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/tasks/` | Create a new task in a project |
+| POST | `/tasks/quick-add` | Create a task from a free-text description, parsed by the AI quick-add engine |
+| GET | `/tasks/` | List tasks, optionally sorted with `?sort=priority` or `?sort=due_date` |
+| GET | `/tasks/search` | Find a task by exact title match, using binary or linear search |
+| GET | `/tasks/{task_id}` | Get a single task by ID |
+| PUT | `/tasks/{task_id}` | Update a task |
+| DELETE | `/tasks/{task_id}` | Delete a task |
 
 ---
 
-## API Endpoints
+## Developer
 
-### health
-- /health GET
-    {
-    "status": "ok"
-    }
+### Piyush Chavan
+**B.Tech, Computer Science and Engineering — IIT Roorkee, 2026**
 
-### auth
-- /auth/register POST
-    request_body = {
-        "name":"Piyush",
-        "email":"piyush@test.com",
-        "password":"abcd1234"
-    }
-
-    // 201 Created
-    response = {
-    "name": "Piyush",
-    "email": "piyush@test.com",
-    "id": 6
-    }
-
-- /auth/login POST
-    request_body = {
-        "email":"piyush@test.com",
-        "password":"abcd1234"
-    }
-
-    // 200 OK
-    response = {
-    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2IiwiZXhwIjoxNzg1NjIxMzg2fQ.0x0Ax2Fjz3_sYizGu_EEexwlF6jglESL_5_iRym5AwQ",
-    "token_type": "bearer"
-    }
-
-    // 401 Unauthorised
-    response = {
-    "detail": "Incorrect email or password"
-    }
-
-- auth/me GET
-
-    // 200 OK
-    response={
-    "name": "Piyush",
-    "email": "piyush@test.com",
-    "id": 6
-    }
-
-    // 401 Unauthorised
-    response={
-    "detail": "Could not validate credentials"
-    }
-
-### projects
-
-- projects/ POST
-
-    request_body = {
-        "name":"piyush demo project",
-        "descreption":"this is just a demo project. for purpose of testing"
-    }
-
-    // 201 Created
-    response={
-    "name": "piyush demo project",
-    "description": null,
-    "id": 5,
-    "owner_id": 6
-    }
-
-- projects/ GET
-
-    // 200 OK
-    response=[
-        {
-            "name": "piyush demo project",
-            "description": null,
-            "id": 5,
-            "owner_id": 6
-        }
-    ]
-
-- projects/{project_id} GET
-    // projects/5
-    response={
-    "name": "piyush demo project",
-    "description": null,
-    "id": 5,
-    "owner_id": 6
-    }
-
-    // projects/6
-    // 404 Not Found
-    response={
-    "detail": "Project not found"
-    }
-
-- projects/{project_id} PUT
-- project/{project_id} DELETE
-
-### tasks
-- tasks/ POST
-    request_body={
-    "title":"Complete Fundamental Backend for Taskflow Project",
-    "description":"N/A",
-    "status":"in_progress",
-    "priority":"high",
-    "due_date":"today",
-    "project_id":5
-    }
-
-    // 201 Created
-    response={
-    "id": 4,
-    "title": "Complete Fundamental Backend for Taskflow Project",
-    "description": "N/A",
-    "status": "in_progress",
-    "priority": "high",
-    "due_date": "today",
-    "project_id": 5
-    }
-
-    //  422 Unprocessable Content
-    response = {
-        "detail": [
-            {
-                "type": "literal_error",
-                "loc": [
-                    "body",
-                    "status"
-                ],
-                "msg": "Input should be 'pending', 'in_progress' or 'completed'",
-                "input": "in-progress",
-                "ctx": {
-                    "expected": "'pending', 'in_progress' or 'completed'"
-                }
-            },
-            {
-                "type": "literal_error",
-                "loc": [
-                    "body",
-                    "priority"
-                ],
-                "msg": "Input should be 'low', 'medium' or 'high'",
-                "input": "max",
-                "ctx": {
-                    "expected": "'low', 'medium' or 'high'"
-                }
-            },
-            {
-                "type": "missing",
-                "loc": [
-                    "body",
-                    "project_id"
-                ],
-                "msg": "Field required",
-                "input": {
-                    "title": "Complete Fundamental Backend for Taskflow Project",
-                    "description": "N/A",
-                    "status": "in-progress",
-                    "priority": "max",
-                    "due_date": "today"
-                }
-            }
-        ]
-    }
-
-- tasks/ GET
-    response=[
-        {
-            "id": 4,
-            "title": "Complete Fundamental Backend for Taskflow Project",
-            "description": "N/A",
-            "status": "in_progress",
-            "priority": "high",
-            "due_date": "today",
-            "project_id": 5
-        }
-    ]
-- tasks/{task_id} GET
-- tasks/{task_id} PUT
-- tasks/{task_id} DELETE
+**Timeline of Development: August 2026**
 
